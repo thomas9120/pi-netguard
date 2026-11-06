@@ -1,4 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { detectNetwork, detectNetworkInScript, displayCommand, runsScript, scriptName } from "./detect.ts";
 
 const BLOCK = "Block";
@@ -12,8 +15,22 @@ export default function netguard(pi: ExtensionAPI): void {
   const networkScripts = new Set<string>();
   let generation = 0;
   let queue = Promise.resolve();
-  // Turned off with /netguard off; every new session starts guarded.
+  // Current-session toggles do not change the saved startup preference.
+  let defaultEnabled = true;
   let enabled = true;
+
+  function loadDefault(ctx: ExtensionContext): boolean {
+    try {
+      const settings = JSON.parse(readFileSync(join(getAgentDir(), "netguard.json"), "utf8"));
+      if (typeof settings?.defaultEnabled !== "boolean") throw new Error("defaultEnabled must be a boolean");
+      return settings.defaultEnabled;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        ctx.ui.notify(`Netguard: could not read startup preference; defaulting to on. ${String(error)}`, "warning");
+      }
+      return true;
+    }
+  }
 
   function reset(): void {
     approved.clear();
@@ -36,7 +53,8 @@ export default function netguard(pi: ExtensionAPI): void {
   pi.on("session_start", (_event, ctx) => {
     reset();
     networkScripts.clear();
-    enabled = true;
+    defaultEnabled = loadDefault(ctx);
+    enabled = defaultEnabled;
     showStatus(ctx);
   });
   pi.on("session_shutdown", () => {
@@ -48,24 +66,40 @@ export default function netguard(pi: ExtensionAPI): void {
     { value: "on", label: "on", description: "Require approval for network-capable commands" },
     { value: "off", label: "off", description: "Stop prompting until /netguard on or a new session" },
     { value: "reset", label: "reset", description: "Revoke session approvals" },
+    { value: "default on", label: "default on", description: "Start new sessions with netguard on" },
+    { value: "default off", label: "default off", description: "Start new sessions with netguard off" },
   ];
 
   pi.registerCommand("netguard", {
-    description: "Show network guard status; /netguard on|off toggles it, /netguard reset revokes session approvals",
+    description: "Show status; on|off toggles this session, default on|off saves the startup preference, reset revokes approvals",
     getArgumentCompletions: (prefix) => subcommands.filter((item) => item.value.startsWith(prefix.trim())),
     handler: async (args, ctx) => {
       const arg = args.trim();
-      if (arg === "on" || arg === "off") {
+      if (arg === "default on" || arg === "default off") {
+        const value = arg === "default on";
+        try {
+          const dir = getAgentDir();
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(join(dir, "netguard.json"), JSON.stringify({ defaultEnabled: value }, null, 2) + "\n", "utf8");
+        } catch (error) {
+          ctx.ui.notify(`Netguard: could not save startup preference. ${String(error)}`, "error");
+          return;
+        }
+        defaultEnabled = value;
+        ctx.ui.notify(`Netguard default saved: ${value ? "on" : "off"} for new sessions and restarts. Current session is ${enabled ? "on" : "off"}; use /netguard on or off to change it now.`, "info");
+        return;
+      } else if (arg === "on" || arg === "off") {
         enabled = arg === "on";
         showStatus(ctx);
       } else if (arg === "reset") {
         reset();
       } else if (arg !== "") {
-        ctx.ui.notify(`Netguard: unknown option "${arg}". Use /netguard on, off or reset.`, "warning");
+        ctx.ui.notify(`Netguard: unknown option "${arg}". Use /netguard on, off, reset, default on or default off.`, "warning");
         return;
       }
-      if (enabled) ctx.ui.notify(`Netguard active: ${approved.size} exact command(s) approved for this session. Use /netguard reset to revoke, /netguard off to disable.`, "info");
-      else ctx.ui.notify("Netguard is OFF: network-capable commands run without approval until /netguard on or a new session.", "warning");
+      const startup = ` New sessions default to ${defaultEnabled ? "on" : "off"}.`;
+      if (enabled) ctx.ui.notify(`Netguard active: ${approved.size} exact command(s) approved for this session. Use /netguard reset to revoke, /netguard off to disable.${startup}`, "info");
+      else ctx.ui.notify(`Netguard is OFF: network-capable commands run without approval until /netguard on or a new session.${startup}`, "warning");
     },
   });
 

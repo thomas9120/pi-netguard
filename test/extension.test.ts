@@ -1,7 +1,22 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { afterEach, beforeEach, test } from "node:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
 import netguard from "../src/index.ts";
+
+const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+let agentDir: string;
+beforeEach(() => {
+  agentDir = mkdtempSync(join(tmpdir(), "netguard-test-"));
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+});
+afterEach(() => {
+  if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+  rmSync(agentDir, { recursive: true, force: true });
+});
 
 type ToolHandler = (event: ToolCallEvent, ctx: ExtensionContext) => Promise<ToolCallEventResult | undefined>;
 type LifecycleHandler = (event: unknown, ctx: ExtensionContext) => void;
@@ -118,6 +133,53 @@ test("a new session starts with netguard on", async () => {
   await h.commands.get("netguard")!.handler("off", h.ctx);
   h.lifecycle("session_start");
   assert.equal((await h.call())?.block, true);
+});
+
+test("saved default off survives a fresh extension and session toggles do not overwrite it", async () => {
+  const h = setup();
+  await h.commands.get("netguard")!.handler("default off", h.ctx);
+  assert.equal((await h.call())?.block, true, "saving a default does not toggle this session");
+  assert.deepEqual(JSON.parse(readFileSync(join(agentDir, "netguard.json"), "utf8")), { defaultEnabled: false });
+  const restarted = setup();
+  restarted.lifecycle("session_start");
+  assert.equal(await restarted.call(), undefined);
+  assert.equal(restarted.prompts.length, 0);
+  await restarted.commands.get("netguard")!.handler("on", restarted.ctx);
+  assert.equal((await restarted.call())?.block, true);
+  restarted.lifecycle("session_start");
+  assert.equal(await restarted.call(), undefined);
+});
+
+test("default on restores guarded startup without changing the current off session", async () => {
+  const h = setup();
+  const command = h.commands.get("netguard")!;
+  await command.handler("default off", h.ctx);
+  h.lifecycle("session_start");
+  await command.handler("default on", h.ctx);
+  assert.equal(await h.call(), undefined);
+  const restarted = setup();
+  restarted.lifecycle("session_start");
+  assert.equal((await restarted.call())?.block, true);
+});
+
+test("invalid startup settings warn and fall back to on", async () => {
+  for (const content of ["{", "null", '{"defaultEnabled":"off"}']) {
+    writeFileSync(join(agentDir, "netguard.json"), content);
+    const h = setup();
+    h.lifecycle("session_start");
+    assert.match(h.notifications.at(-1)!, /could not read startup preference/);
+    assert.equal((await h.call())?.block, true);
+  }
+});
+
+test("failed saves report an error and leave the default and current session on", async () => {
+  mkdirSync(join(agentDir, "netguard.json"));
+  const h = setup();
+  await h.commands.get("netguard")!.handler("default off", h.ctx);
+  assert.match(h.notifications.at(-1)!, /could not save startup preference/);
+  assert.equal((await h.call())?.block, true);
+  await h.commands.get("netguard")!.handler("", h.ctx);
+  assert.match(h.notifications.at(-1)!, /New sessions default to on/);
 });
 
 test("scripts written while off are flagged once netguard is back on", async () => {

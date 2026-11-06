@@ -32,9 +32,18 @@ Approval permits the **whole shell command**, including chained commands and sub
 
 Session approvals stay in memory. New, resumed or forked sessions, reloads and shutdown clear them. Use `/netguard reset` to revoke them immediately; `/netguard` reports the approval count. Resetting does not stop commands that are already running.
 
-`/netguard off` stops prompting: recognized network-capable commands run without approval and the status bar shows `netguard: OFF`. `/netguard on` turns the guard back on. Every new session starts with the guard on. Scripts written while it is off are still tracked, so running them prompts once it is back on.
+`/netguard off` stops prompting: recognized network-capable commands run without approval and the status bar shows `netguard: OFF`. `/netguard on` turns the guard back on. These commands only affect the current session. Scripts written while it is off are still tracked, so running them prompts once it is back on.
 
-In print/JSON mode, or without an approval UI, detected calls are blocked. RPC clients must support pi's selection dialog. A dialog error, cancellation or aborted operation blocks the call. Calls that are not detected continue normally. Netguard emits local approval/block notifications and a status indicator; it does not send telemetry or create its own audit log.
+New sessions start with the guard **on** unless you save a different default:
+
+```text
+/netguard default off
+/netguard default on
+```
+
+The saved default applies to new, resumed or forked sessions, reloads and pi restarts across projects. It does not change the current session; use `/netguard off` as well to disable it immediately. `/netguard` reports the current status and startup default. The preference is stored in `~/.pi/agent/netguard.json` as `{"defaultEnabled": false}` (or `true`), using `PI_CODING_AGENT_DIR` instead if set. Missing settings default to on; unreadable or invalid settings warn and fall back to on.
+
+While the guard is on, in print/JSON mode or without an approval UI, detected calls are blocked. RPC clients must support pi's selection dialog. A dialog error, cancellation or aborted operation blocks the call. Calls that are not detected continue normally. Netguard emits local approval/block notifications and a status indicator; it does not send telemetry or create its own audit log.
 
 ## What triggers a prompt
 
